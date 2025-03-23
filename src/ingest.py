@@ -6,9 +6,12 @@ import numpy as np
 from redis.commands.search.query import Query
 import os
 import fitz
+import re
+import pandas as pd
+import pdfplumber
 
 # Initialize Redis connection
-redis_client = redis.Redis(host="localhost", port=6380, db=0)
+redis_client = redis.Redis(host="localhost", port=6379, db=0)
 
 VECTOR_DIM = 768
 INDEX_NAME = "embedding_index"
@@ -74,6 +77,57 @@ def extract_text_from_pdf(pdf_path):
     return text_by_page
 
 
+def preprocess_text(text: str) -> str:
+    """Preprocess text by removing extra whitespace, punctuation, and other noise."""
+    text = text.lower()  # Convert to lowercase
+    text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
+    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)  # Remove punctuation
+    text = re.sub(r'[^a-zA-Z0-9\s\*\-\•]', '', text)  # Keep bullet characters
+    return text.strip()
+
+def extract_tables_from_pdf(pdf_path):
+    """Extract tables from a PDF file and return as a list of DataFrames."""
+    tables = []
+    with pdfplumber.open(pdf_path) as pdf:
+        for page in pdf.pages:
+            extracted_tables = page.extract_tables()
+            for table in extracted_tables:
+                # Convert to DataFrame for structured storage
+                df = pd.DataFrame(table)
+                tables.append(df)
+    return tables
+
+def detect_bullet_points(text):
+    """Identify and format bullet points and numbered lists in text."""
+    bullet_point_patterns = [
+        r'^\s*[\*\-•]\s+',   # Match *, -, • followed by space
+        r'^\s*\d+\.\s+',     # Match numbered lists like 1., 2., 3.
+        r'^\s*[a-zA-Z]\)\s+' # Match lettered lists like a), b), c)
+    ]
+    
+    formatted_lines = []
+    for line in text.split("\n"):
+        if any(re.match(pattern, line) for pattern in bullet_point_patterns):
+            formatted_lines.append(f"- {line.strip()}")  # Convert to a standardized bullet format
+        else:
+            formatted_lines.append(line.strip())
+    
+    return "\n".join(formatted_lines)
+
+def extract_captions_from_text(text):
+    """Identify possible captions in extracted text."""
+    caption_patterns = [
+        r'Figure\s\d+[:\.\-]',  # Matches "Figure 1:", "Figure 2.", "Figure 3 -"
+        r'Table\s\d+[:\.\-]',   # Matches "Table 1:", "Table 2."
+    ]
+    
+    captions = []
+    for line in text.split("\n"):
+        if any(re.search(pattern, line, re.IGNORECASE) for pattern in caption_patterns):
+            captions.append(line.strip())
+    
+    return captions
+
 # split the text into chunks with overlap
 def split_text_into_chunks(text, chunk_size=300, overlap=50):
     """Split text into chunks of approximately chunk_size words with overlap."""
@@ -85,19 +139,23 @@ def split_text_into_chunks(text, chunk_size=300, overlap=50):
     return chunks
 
 
-# Process all PDF files in a given directory
 def process_pdfs(data_dir):
-
     for file_name in os.listdir(data_dir):
         if file_name.endswith(".pdf"):
             pdf_path = os.path.join(data_dir, file_name)
-            text_by_page = extract_text_from_pdf(pdf_path)
+            text_by_page = extract_text_from_pdf(pdf_path)  # Extract text from PDF
+            tables = extract_tables_from_pdf(pdf_path)  # Extract tables separately
+            
             for page_num, text in text_by_page:
-                chunks = split_text_into_chunks(text)
+                cleaned_text = preprocess_text(text)  # Clean text first
+                formatted_text = detect_bullet_points(cleaned_text)  # Then format bullet points
+                captions = extract_captions_from_text(formatted_text)  # Extract captions
+                chunks = split_text_into_chunks(formatted_text)  # Chunk the cleaned, formatted text
                 # print(f"  Chunks: {chunks}")
+                
                 for chunk_index, chunk in enumerate(chunks):
                     # embedding = calculate_embedding(chunk)
-                    embedding = get_embedding(chunk)
+                    embedding = get_embedding(chunk)  
                     store_embedding(
                         file=file_name,
                         page=str(page_num),
@@ -105,7 +163,8 @@ def process_pdfs(data_dir):
                         chunk=str(chunk),
                         embedding=embedding,
                     )
-            print(f" -----> Processed {file_name}")
+                
+            print(f"-----> Processed {file_name} (Tables: {len(tables)})")
 
 
 def query_redis(query_text: str):
@@ -130,7 +189,8 @@ def main():
     clear_redis_store()
     create_hnsw_index()
 
-    process_pdfs("../data/")
+    process_pdfs("/Users/lesrene/Desktop/DS4300/RagIngestAndSearch/data/ds4300 notes")
+    #process_pdfs("/Users/lesrene/Desktop/DS4300/RagIngestAndSearch/data/total_notes.pdf")
     print("\n---Done processing PDFs---\n")
     query_redis("What is the capital of France?")
 
