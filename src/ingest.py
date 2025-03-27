@@ -2,6 +2,8 @@
 
 import ollama
 import redis
+import chromadb 
+import faiss 
 import numpy as np
 from redis.commands.search.query import Query
 import os
@@ -10,23 +12,50 @@ import re
 import pandas as pd
 import pdfplumber
 
-# Initialize Redis connection
-redis_client = redis.Redis(host="localhost", port=6379, db=0)
+class FAISSManager:
+    def __init__(self, dim):
+        self.index = faiss.IndexFlatL2(dim)
+        self.keys = []
+
+    def add_embedding(self, embedding, key):
+        self.index.add(np.array([embedding], dtype=np.float32))
+        self.keys.append(key)
+
+    # search FAISS index for the nearest neighbors of the given embedding
+    def search(self, embedding, k=5):
+        D, I = self.index.search(np.array([embedding], dtype=np.float32), k)
+        return [(self.keys[i], D[0][idx]) for idx, i in enumerate(I[0]) if i != -1]
 
 VECTOR_DIM = 768
 INDEX_NAME = "embedding_index"
 DOC_PREFIX = "doc:"
 DISTANCE_METRIC = "COSINE"
 
+# Initialize Redis connection
+redis_client = redis.Redis(host="localhost", port=6379, db=0)
 
-# used to clear the redis vector store
-def clear_redis_store():
-    print("Clearing existing Redis store...")
+# Initialize ChromaDB client
+chroma_client = chromadb.HttpClient(host="localhost", port=8000)
+chroma_collection = chroma_client.get_or_create_collection(name="pdf_embeddings")
+print(chroma_client.list_collections())
+
+# Initialize FAISS index
+faiss_index = FAISSManager(VECTOR_DIM)
+
+
+# used to clear the redis, chroma, & faiss vector stores
+def clear_stores():
+    print("Clearing existing vector stores...")
     redis_client.flushdb()
-    print("Redis store cleared.")
+    faiss_index.index.reset() 
+    #chroma_client.delete_collection(name="pdf_embeddings")
+    chroma_collection.delete(where={"$exists": True})
+    print(chroma_client.list_collections())
+    print("All stores cleared.")
 
 
-# Create an HNSW index in Redis
+# Create an HNSW index in Redis (only necessary for Redis since FAISS uses exhaustive search
+# and Chroma automatically uses HNSW indexing)
 def create_hnsw_index():
     try:
         redis_client.execute_command(f"FT.DROPINDEX {INDEX_NAME} DD")
@@ -53,6 +82,8 @@ def get_embedding(text: str, model: str = "nomic-embed-text") -> list:
 # store the embedding in Redis
 def store_embedding(file: str, page: str, chunk: str, embedding: list):
     key = f"{DOC_PREFIX}:{file}_page_{page}_chunk_{chunk}"
+
+    # Store in Redis
     redis_client.hset(
         key,
         mapping={
@@ -64,6 +95,15 @@ def store_embedding(file: str, page: str, chunk: str, embedding: list):
             ).tobytes(),  # Store as byte array
         },
     )
+
+    # Store in FAISS
+    faiss_index.add_embedding(embedding, key) 
+
+    # Store  in Chroma
+    chroma_collection.add(
+        ids=[key], embeddings=[embedding], metadatas={"file": file, "page": page, "chunk": chunk}
+    )
+
     print(f"Stored embedding for: {chunk}")
 
 
@@ -168,6 +208,8 @@ def process_pdfs(data_dir):
 
 
 def query_redis(query_text: str):
+
+    print("\n🔎 Querying Redis...")
     q = (
         Query("*=>[KNN 5 @embedding $vec AS vector_distance]")
         .sort_by("vector_distance")
@@ -184,9 +226,20 @@ def query_redis(query_text: str):
     for doc in res.docs:
         print(f"{doc.id} \n ----> {doc.vector_distance}\n")
 
+    
+    print("\n🔎 Querying FAISS...")
+    faiss_results = faiss_index.search(embedding, k=5)
+    for key, distance in faiss_results:
+        print(f"{key} \n ----> Distance: {distance}\n")
+
+    print("\n🔎 Querying ChromaDB...")
+    chroma_results = chroma_collection.query(query_embeddings=[embedding], n_results=5)
+    for doc_id, score in zip(chroma_results["ids"][0], chroma_results["distances"][0]):
+        print(f"{doc_id} \n ----> Distance: {score}\n")
+
 
 def main():
-    clear_redis_store()
+    clear_stores()
     create_hnsw_index()
 
     process_pdfs("/Users/lesrene/Desktop/DS4300/RagIngestAndSearch/data/ds4300 notes")
