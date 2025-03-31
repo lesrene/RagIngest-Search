@@ -175,7 +175,7 @@ def process_pdfs(data_dir):
               
                for chunk_index, chunk in enumerate(chunks):
                    # embedding = calculate_embedding(chunk)
-                   embedding = get_embedding3(chunk) 
+                   embedding = get_embedding3(chunk)  # change according to which embedding model you are testing with
                    store_embedding(
                        file=file_name,
                        page=str(page_num),
