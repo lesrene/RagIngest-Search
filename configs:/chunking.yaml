@@ -1,0 +1,2 @@
+chunk_size: 300 # Options: 300, 500, 1000
+chunk_overlap: 50 # Options: 0, 50, 100
