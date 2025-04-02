@@ -1,0 +1,2 @@
+- vector_db.name=faiss
+- chunk_size=500

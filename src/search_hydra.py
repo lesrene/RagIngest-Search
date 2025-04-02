@@ -9,17 +9,20 @@ from sentence_transformers import SentenceTransformer
 import ollama
 from redis.commands.search.query import Query
 
-# Function to get embedding
-def get_embedding(text: str, model: str) -> list:
-    """Generate embeddings using the specified model."""
-    response = ollama.embeddings(model=model, prompt=text)
-    return response["embedding"]
+def get_embedding(text: str, cfg, model=None) -> list:
+    if cfg.embedding_model.name == "nomic-embed-text":
+        response = ollama.embeddings(model=cfg.embedding_model.name, prompt=text)
+        return response["embedding"]
+    elif model:
+        return model.encode(text).tolist()
+    else:
+        raise ValueError("No valid embedding model provided.")
 
 # Function to search in Redis
 def search_redis(query, cfg, top_k=3):
-    redis_client = redis.StrictRedis(host=cfg.redis.host, port=cfg.redis.port, decode_responses=True)
+    redis_client = redis.StrictRedis(host=cfg.vector_db.host, port=cfg.vector_db.port, decode_responses=True)
 
-    query_embedding = get_embedding(query, model=cfg.embedding_model.name)
+    query_embedding = get_embedding(query, cfg)
     query_vector = np.array(query_embedding, dtype=np.float32).tobytes()
 
     try:
@@ -34,7 +37,7 @@ def search_redis(query, cfg, top_k=3):
             q, query_params={"vec": query_vector}
         )
 
-        top_results = [
+        return [
             {
                 "file": result.file,
                 "page": result.page,
@@ -44,17 +47,15 @@ def search_redis(query, cfg, top_k=3):
             for result in results.docs
         ][:top_k]
 
-        return top_results
-
     except Exception as e:
         print(f"Redis search error: {e}")
         return []
 
 # Function to search in FAISS
 def search_faiss(query, cfg, top_k=3):
-    index = faiss.read_index(cfg.faiss.index_path)
+    index = faiss.read_index(cfg.vector_db.index_path)
     
-    query_embedding = np.array(get_embedding(query, model=cfg.embedding_model.name), dtype=np.float32)
+    query_embedding = np.array(get_embedding(query, cfg), dtype=np.float32)
     query_embedding = np.expand_dims(query_embedding, axis=0)  # Reshape for FAISS
 
     distances, indices = index.search(query_embedding, top_k)
@@ -63,10 +64,10 @@ def search_faiss(query, cfg, top_k=3):
 
 # Function to search in ChromaDB
 def search_chroma(query, cfg, top_k=3):
-    client = chromadb.PersistentClient(path=cfg.chroma.db_path)
-    collection = client.get_or_create_collection(cfg.chroma.collection_name)
+    client = chromadb.PersistentClient(path=cfg.vector_db.db_path)
+    collection = client.get_or_create_collection(cfg.vector_db.collection_name)
 
-    query_embedding = get_embedding(query, model=cfg.embedding_model.name)
+    query_embedding = get_embedding(query, cfg)
     
     results = collection.query(query_embeddings=[query_embedding], n_results=top_k)
     
@@ -74,6 +75,7 @@ def search_chroma(query, cfg, top_k=3):
         {"file": res["file"], "page": res["page"], "chunk": res["chunk"], "similarity": res["similarity"]}
         for res in results["documents"][0]
     ]
+
 
 # Function to select the correct search method
 def search_embeddings(query, cfg, top_k=3):
@@ -108,31 +110,42 @@ Query: {query}
 Answer:"""
 
     response = ollama.chat(
-        model=cfg.llm.name, messages=[{"role": "user", "content": prompt}]
+        model=cfg.llm.model, messages=[{"role": "user", "content": prompt}]
     )
 
     return response["message"]["content"]
 
-# Interactive search
-def interactive_search(cfg):
-    print("🔍 RAG Search Interface")
-    print("Type 'exit' to quit")
 
-    while True:
-        query = input("\nEnter your search query: ")
+# Function to process a file with 5 prompts
+def process_prompt_file(file_path, cfg):
+    try:
+        # Read the file and get the prompts
+        with open(file_path, "r", encoding="utf-8") as file:
+            prompts = [line.strip() for line in file.readlines() if line.strip()]
 
-        if query.lower() == "exit":
-            break
+        if len(prompts) < 1:
+            print(" Error: The input file must contain at least 1 prompt.")
+            return
 
-        context_results = search_embeddings(query, cfg)
-        response = generate_rag_response(query, context_results, cfg)
+        responses = []
 
-        print("\n--- Response ---")
-        print(response)
+        # Process each prompt
+        for prompt in prompts:
+            context_results = search_embeddings(prompt, cfg)
+            response = generate_rag_response(prompt, context_results, cfg)
+            responses.append(f"Query: {prompt}\nResponse: {response}\n")
 
-@hydra.main(config_path="config", config_name="config", version_base=None)
+        print(responses)
+
+    except Exception as e:
+        print(f" Error processing file: {e}")
+
+@hydra.main(config_path="/Users/lesrene/Desktop/DS4300/RagIngestAndSearch/configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-    interactive_search(cfg)
+    #file_path = "prompts.txt"  # Change this to your actual file path
+    file_path = cfg.prompts_dir.directory
+    process_prompt_file(file_path, cfg)
+    #process_prompt_file(cfg.prompts_dir.directory, cfg)
 
 if __name__ == "__main__":
     main()

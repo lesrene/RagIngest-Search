@@ -1,0 +1,5 @@
+What is the difference between a list where memory is contiguously allocated and a list where linked structures are used?
+Describe the differences between horizontal and vertical scaling. 
+What does the $nin operator mean in a Mongo query?
+Succinctly describe the four components of ACID compliant transactions. 
+In Redis, what is the difference between the INC and INCR commands? 

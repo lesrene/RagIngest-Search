@@ -1,8 +1,0 @@
-name: "redis"
-host: "localhost"
-port: 6379
-db: 0
-distance_metric: "COSINE"
-vector_dim: 768
-doc_prefix: "doc:"
-index_name: "embedding_index"

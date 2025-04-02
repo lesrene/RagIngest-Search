@@ -11,6 +11,7 @@ import fitz
 import re
 import pandas as pd
 import pdfplumber
+from sentence_transformers import SentenceTransformer
 
 class FAISSManager:
     def __init__(self, dim):
@@ -21,13 +22,10 @@ class FAISSManager:
         self.index.add(np.array([embedding], dtype=np.float32))
         self.keys.append(key)
 
-    # search FAISS index for the nearest neighbors of the given embedding
     def search(self, embedding, k=5):
         D, I = self.index.search(np.array([embedding], dtype=np.float32), k)
         return [(self.keys[i], D[0][idx]) for idx, i in enumerate(I[0]) if i != -1]
-    
 
-# extract the text from a PDF by page
 def extract_text_from_pdf(pdf_path):
     """Extract text from a PDF file."""
     doc = fitz.open(pdf_path)
@@ -36,13 +34,11 @@ def extract_text_from_pdf(pdf_path):
         text_by_page.append((page_num, page.get_text()))
     return text_by_page
 
-
 def preprocess_text(text: str) -> str:
     """Preprocess text by removing extra whitespace, punctuation, and other noise."""
-    text = text.lower()  # Convert to lowercase
-    text = re.sub(r'\s+', ' ', text)  # Normalize whitespace
-    text = re.sub(r'[^a-zA-Z0-9\s]', '', text)  # Remove punctuation
-    text = re.sub(r'[^a-zA-Z0-9\s\*\-\•]', '', text)  # Keep bullet characters
+    text = text.lower()
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^a-zA-Z0-9\s\*\-\•]', '', text)
     return text.strip()
 
 def extract_tables_from_pdf(pdf_path):
@@ -52,132 +48,58 @@ def extract_tables_from_pdf(pdf_path):
         for page in pdf.pages:
             extracted_tables = page.extract_tables()
             for table in extracted_tables:
-                # Convert to DataFrame for structured storage
                 df = pd.DataFrame(table)
                 tables.append(df)
     return tables
 
-def detect_bullet_points(text):
-    """Identify and format bullet points and numbered lists in text."""
-    bullet_point_patterns = [
-        r'^\s*[\*\-•]\s+',   # Match *, -, • followed by space
-        r'^\s*\d+\.\s+',     # Match numbered lists like 1., 2., 3.
-        r'^\s*[a-zA-Z]\)\s+' # Match lettered lists like a), b), c)
-    ]
-    
-    formatted_lines = []
-    for line in text.split("\n"):
-        if any(re.match(pattern, line) for pattern in bullet_point_patterns):
-            formatted_lines.append(f"- {line.strip()}")  # Convert to a standardized bullet format
-        else:
-            formatted_lines.append(line.strip())
-    
-    return "\n".join(formatted_lines)
-
-def extract_captions_from_text(text):
-    """Identify possible captions in extracted text."""
-    caption_patterns = [
-        r'Figure\s\d+[:\.\-]',  # Matches "Figure 1:", "Figure 2.", "Figure 3 -"
-        r'Table\s\d+[:\.\-]',   # Matches "Table 1:", "Table 2."
-    ]
-    
-    captions = []
-    for line in text.split("\n"):
-        if any(re.search(pattern, line, re.IGNORECASE) for pattern in caption_patterns):
-            captions.append(line.strip())
-    
-    return captions
-
-
-def process_pdfs(data_dir):
-    for file_name in os.listdir(data_dir):
+def process_pdfs(cfg, split_text_into_chunks, get_embedding, store_embedding):
+    #print(cfg)
+    for file_name in os.listdir(cfg.data_dir.directory):
         if file_name.endswith(".pdf"):
-            pdf_path = os.path.join(data_dir, file_name)
-            text_by_page = extract_text_from_pdf(pdf_path)  # Extract text from PDF
-            tables = extract_tables_from_pdf(pdf_path)  # Extract tables separately
+            pdf_path = os.path.join(cfg.data_dir.directory, file_name)
+            text_by_page = extract_text_from_pdf(pdf_path)
+            tables = extract_tables_from_pdf(pdf_path)
             
             for page_num, text in text_by_page:
-                cleaned_text = preprocess_text(text)  # Clean text first
-                formatted_text = detect_bullet_points(cleaned_text)  # Then format bullet points
-                captions = extract_captions_from_text(formatted_text)  # Extract captions
-                chunks = split_text_into_chunks(formatted_text)  # Chunk the cleaned, formatted text
-                # print(f"  Chunks: {chunks}")
-                
-                for chunk_index, chunk in enumerate(chunks):
-                    # embedding = calculate_embedding(chunk)
-                    embedding = get_embedding(chunk)  
-                    store_embedding(
-                        file=file_name,
-                        page=str(page_num),
-                        # chunk=str(chunk_index),
-                        chunk=str(chunk),
-                        embedding=embedding,
-                    )
-                
-            print(f"-----> Processed {file_name} (Tables: {len(tables)})")
+                cleaned_text = preprocess_text(text)
+                chunks = split_text_into_chunks(cleaned_text, cfg.chunk_size, cfg.chunk_overlap)
 
-    
-@hydra.main(config_path="config", config_name="config", version_base=None)
+                for chunk in chunks:
+                    embedding = get_embedding(chunk, cfg)
+                    store_embedding(file_name, str(page_num), chunk, embedding)
+                
+            print(f"Processed {file_name} (Tables: {len(tables)})")
+
+@hydra.main(config_path="/Users/lesrene/Desktop/DS4300/RagIngestAndSearch/configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-
     # Initialize vector DB
     if cfg.vector_db.name == "redis":
         redis_client = redis.Redis(host=cfg.vector_db.host, port=cfg.vector_db.port, db=cfg.vector_db.db)
 
-        def create_hnsw_index():
-            try:
-                redis_client.execute_command(f"FT.DROPINDEX {cfg.vector_db.index_name} DD")
-            except redis.exceptions.ResponseError:
-                pass
-
-            redis_client.execute_command(
-                f"""
-                FT.CREATE {cfg.vector_db.index_name} ON HASH PREFIX 1 {cfg.vector_db.doc_prefix}
-                SCHEMA text TEXT
-                embedding VECTOR HNSW 6 DIM {cfg.vector_db.vector_dim} TYPE FLOAT32 DISTANCE_METRIC {cfg.vector_db.distance_metric}
-                """
-            )
-            print("Index created successfully.")
-
-        create_hnsw_index()
-
     elif cfg.vector_db.name == "chroma":
         chroma_client = chromadb.HttpClient(host=cfg.vector_db.host, port=cfg.vector_db.port)
-        chroma_collection = chroma_client.get_or_create_collection(name="pdf_embeddings")
+        chroma_collection = chroma_client.get_or_create_collection(name=cfg.vector_db.collection_name)
 
     elif cfg.vector_db.name == "faiss":
-        #faiss_index = FAISSManager(VECTOR_DIM)
-        faiss_index = FAISSManager(cfg.vector_db.vector_dim)
+        faiss_index = FAISSManager(cfg.embedding_model.vector_dim)
 
-    def clear_store():
-        print("Clearing existing vector stores...")
-        if cfg.vector_db.name == "redis":
-            redis_client.flushdb()
-        elif cfg.vector_db.name == "faiss":
-            faiss_index.index.reset() 
-        elif cfg.vector_db.name == "chroma":
-            chroma_collection.delete(where={"$exists": True})
-        print("All stores cleared.")
-
-    clear_store()
-
-    def get_embedding(text: str) -> list:
-        if cfg.embedding_model.name == "nomic":
+    def get_embedding(text: str, cfg) -> list:
+        if cfg.embedding_model.name == "nomic-embed-text":
             response = ollama.embeddings(model=cfg.embedding_model.name, prompt=text)
-        return response["embedding"]
+            return response["embedding"]
+        elif cfg.embedding_model.name in ["all-MiniLM-L6-v2", "all-mpnet-base-v2"]:
+            model = SentenceTransformer(cfg.embedding_model.name)
+            return model.encode(text).tolist()
+        else:
+            raise ValueError(f"Unsupported embedding model: {cfg.embedding_model.name}")
 
     def store_embedding(file: str, page: str, chunk: str, embedding: list):
-        key = f"{cfg.vector_db.doc_prefix}:{file}_page_{page}_chunk_{chunk}"
+        key = f"{cfg.vector_db.doc_prefix}:{file}_page_{page}"
 
         if cfg.vector_db.name == "redis":
             redis_client.hset(
                 key,
-                mapping={
-                    "file": file,
-                    "page": page,
-                    "chunk": chunk,
-                    "embedding": np.array(embedding, dtype=np.float32).tobytes(),
-                },
+                mapping={"file": file, "page": page, "chunk": chunk, "embedding": np.array(embedding, dtype=np.float32).tobytes()}
             )
 
         elif cfg.vector_db.name == "faiss":
@@ -190,17 +112,14 @@ def main(cfg: DictConfig):
                 metadatas={"file": file, "page": page, "chunk": chunk}
             )
 
-        print(f" Stored embedding for: {chunk}")
+        print(f"Stored embedding for: {chunk}")
 
-    def split_text_into_chunks(text, chunk_size=cfg.chunking.chunk_size, overlap=cfg.chunking.chunk_overlap):
+    def split_text_into_chunks(text, chunk_size, overlap):
         words = text.split()
-        chunks = []
-        for i in range(0, len(words), chunk_size - overlap):
-            chunk = " ".join(words[i: i + chunk_size])
-            chunks.append(chunk)
+        chunks = [" ".join(words[i: i + chunk_size]) for i in range(0, len(words), chunk_size - overlap)]
         return chunks
 
-    process_pdfs(cfg.data.directory)
+    process_pdfs(cfg, split_text_into_chunks, get_embedding, store_embedding)
     print("\n---Done processing PDFs---\n")
 
     def query_vdb(query_text: str):
@@ -213,7 +132,7 @@ def main(cfg: DictConfig):
                 .dialect(2)
             )
             query_text = "Efficient search in vector databases"
-            embedding = get_embedding(query_text)
+            embedding = get_embedding(query_text, cfg)
             res = redis_client.ft(cfg.vector_db.index_name).search(
                 q, query_params={"vec": np.array(embedding, dtype=np.float32).tobytes()}
             )
@@ -235,7 +154,7 @@ def main(cfg: DictConfig):
                 print(f"{doc_id} \n ----> Distance: {score}\n")
 
     query_vdb("What is the capital of France?")
-    
+
 
 
 if __name__ == "__main__":
