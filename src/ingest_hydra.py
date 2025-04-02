@@ -12,6 +12,25 @@ import re
 import pandas as pd
 import pdfplumber
 from sentence_transformers import SentenceTransformer
+import time
+import resource
+import csv
+
+def track_performance(func, *args, **kwargs):
+    start_time = time.time()
+    memory_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # in KB (Linux/Mac)
+
+    # Execute the function
+    result = func(*args, **kwargs)
+
+    memory_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    end_time = time.time()
+
+    # Calculate time and memory usage
+    elapsed_time = end_time - start_time
+    memory_used = memory_after - memory_before
+
+    return result, elapsed_time, memory_used
 
 class FAISSManager:
     def __init__(self, dim):
@@ -119,8 +138,12 @@ def main(cfg: DictConfig):
         chunks = [" ".join(words[i: i + chunk_size]) for i in range(0, len(words), chunk_size - overlap)]
         return chunks
 
-    process_pdfs(cfg, split_text_into_chunks, get_embedding, store_embedding)
+    result1, elapsed_time1, memory_used1 = track_performance(process_pdfs, cfg, split_text_into_chunks, get_embedding, store_embedding)
     print("\n---Done processing PDFs---\n")
+
+    with open('performance_log.csv', mode='a', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow([cfg.vector_db.name, cfg.llm.name, cfg.embedding_model.name, cfg.chunk_size, cfg.chunk_overlap, elapsed_time1, memory_used1])
 
     def query_vdb(query_text: str):
         if cfg.vector_db.name == "redis":
@@ -154,8 +177,23 @@ def main(cfg: DictConfig):
                 print(f"{doc_id} \n ----> Distance: {score}\n")
 
     query_vdb("What is the capital of France?")
+    
+    result2, elapsed_time2, memory_used2 = track_performance(query_vdb, "What is the capital of France?")
 
+    with open("performance_log.csv", mode='r+', newline='') as file:
+        reader = csv.reader(file)
+        lines = list(reader)  
 
+        # Modify the last line
+        if lines:  
+            lines[-1].extend([elapsed_time2, memory_used2])
+
+        # Move cursor to the start & clear file before writing
+        file.seek(0)
+        file.truncate()
+
+        writer = csv.writer(file) 
+        writer.writerows(lines)
 
 if __name__ == "__main__":
     main()

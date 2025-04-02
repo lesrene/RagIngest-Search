@@ -1,0 +1,1 @@
+Experiment #, Vector DB, LLM, Embedding Model, Chunking Size, Chunk Overlap Size, Speed (Indexing), Memory Usage (Indexing), Speed (Embedding), Memory Usage (Embedding), Retrieval Quality Score (Lesrene), Retrieval Quality Score (Pavi), Retrieval Quality Score (Zainab), Retrieval Quality Score (Avg)
