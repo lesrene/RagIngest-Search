@@ -8,6 +8,25 @@ from omegaconf import DictConfig
 from sentence_transformers import SentenceTransformer
 import ollama
 from redis.commands.search.query import Query
+import time
+import resource
+import csv
+
+def track_performance(func, *args, **kwargs):
+    start_time = time.time()
+    memory_before = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss  # in KB (Linux/Mac)
+
+    # Execute the function
+    result = func(*args, **kwargs)
+
+    memory_after = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    end_time = time.time()
+
+    # Calculate time and memory usage
+    elapsed_time = end_time - start_time
+    memory_used = memory_after - memory_before
+
+    return result, elapsed_time, memory_used
 
 def get_embedding(text: str, cfg, model=None) -> list:
     if cfg.embedding_model.name == "nomic-embed-text":
@@ -88,32 +107,43 @@ def search_embeddings(query, cfg, top_k=3):
     else:
         raise ValueError(f"Unsupported vector database: {cfg.vector_db.name}")
 
-# Function to generate response
+# Function to generate response with formatted output
 def generate_rag_response(query, context_results, cfg):
+    if not context_results:
+        return "I couldn't find relevant context for this query."
+
+    # Format context with bullet points
     context_str = "\n".join(
         [
-            f"From {result.get('file', 'Unknown file')} (page {result.get('page', 'Unknown page')}, chunk {result.get('chunk', 'Unknown chunk')}) "
-            f"with similarity {float(result.get('similarity', 0)):.2f}"
+            f"- **File:** {result.get('file', 'Unknown file')}\n"
+            f"  - **Page:** {result.get('page', 'Unknown page')}\n"
+            f"  - **Chunk:** {result.get('chunk', 'Unknown chunk')}\n"
+            f"  - **Similarity:** {float(result.get('similarity', 0)):.2f}\n"
             for result in context_results
         ]
     )
 
     prompt = f"""You are a helpful AI assistant. 
-    Use the following context to answer the query as accurately as possible. If the context is 
-    not relevant to the query, say 'I don't know'.
+Use the following context to answer the query as accurately as possible. 
+If the context is not relevant, say 'I don't know'.
 
-Context:
+**Context:**  
 {context_str}
 
-Query: {query}
+**Query:** {query}  
 
-Answer:"""
+**Answer:**"""
 
+    # Generate response
     response = ollama.chat(
-        model=cfg.llm.model, messages=[{"role": "user", "content": prompt}]
+        model=cfg.llm.name, messages=[{"role": "user", "content": prompt}]
     )
+    raw_response = response["message"]["content"]
 
-    return response["message"]["content"]
+    # 🔹 Format response with bullet points (if applicable)
+    formatted_response = "\n".join([f"- {line.strip()}" for line in raw_response.split("\n") if line.strip()])
+
+    return formatted_response
 
 
 # Function to process a file with 5 prompts
@@ -135,16 +165,39 @@ def process_prompt_file(file_path, cfg):
             response = generate_rag_response(prompt, context_results, cfg)
             responses.append(f"Query: {prompt}\nResponse: {response}\n")
 
-        print(responses)
+        for response in responses:
+            print(response)
 
     except Exception as e:
         print(f" Error processing file: {e}")
 
 @hydra.main(config_path="/Users/lesrene/Desktop/DS4300/RagIngestAndSearch/configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
-    #file_path = "prompts.txt"  # Change this to your actual file path
+    print(f"Chunk Size: {cfg.chunk_size}")
+    print(f"Chunk Overlap: {cfg.chunk_overlap}")
+    print(f"Vector Database: {cfg.vector_db.name}")  
+    print(f"Embedding Model: {cfg.embedding_model.name}")
+    print(f"LLM: {cfg.llm.name}\n")
+    #file_path = "prompts.txt"  
     file_path = cfg.prompts_dir.directory
-    process_prompt_file(file_path, cfg)
+    #process_prompt_file(file_path, cfg)
+
+    result2, elapsed_time2, memory_used2 = track_performance(process_prompt_file, file_path, cfg)
+
+    with open("performance_log.csv", mode='r+', newline='') as file:
+        reader = csv.reader(file)
+        lines = list(reader)  
+
+        # Modify the last line
+        if lines:  
+            lines[-1].extend([elapsed_time2, memory_used2])
+
+        # Move cursor to the start & clear file before writing
+        file.seek(0)
+        file.truncate()
+
+        writer = csv.writer(file) 
+        writer.writerows(lines)
     #process_prompt_file(cfg.prompts_dir.directory, cfg)
 
 if __name__ == "__main__":

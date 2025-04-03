@@ -1,2 +1,2 @@
 name: "all-MiniLM-L6-v2"
-dimensions: 384
+vector_dim: 384

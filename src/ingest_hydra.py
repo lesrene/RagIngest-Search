@@ -31,15 +31,27 @@ def track_performance(func, *args, **kwargs):
     memory_used = memory_after - memory_before
 
     return result, elapsed_time, memory_used
-
+    
 class FAISSManager:
-    def __init__(self, dim):
-        self.index = faiss.IndexFlatL2(dim)
+    def __init__(self, dim, index_path="/Users/lesrene/Desktop/faiss_index.bin"):
+        self.index_path = index_path
         self.keys = []
+        
+        if os.path.exists(self.index_path):
+            print(f"Loading existing FAISS index from {self.index_path}...")
+            self.index = faiss.read_index(self.index_path)
+        else:
+            self.index = faiss.IndexFlatL2(dim)
+            print(f"Creating new FAISS index at {self.index_path}")
 
     def add_embedding(self, embedding, key):
         self.index.add(np.array([embedding], dtype=np.float32))
         self.keys.append(key)
+        self.save_index()  # Save after adding
+
+    def save_index(self):
+        faiss.write_index(self.index, self.index_path)
+        print(f"FAISS index saved to {self.index_path}")
 
     def search(self, embedding, k=5):
         D, I = self.index.search(np.array([embedding], dtype=np.float32), k)
@@ -91,6 +103,11 @@ def process_pdfs(cfg, split_text_into_chunks, get_embedding, store_embedding):
 
 @hydra.main(config_path="/Users/lesrene/Desktop/DS4300/RagIngestAndSearch/configs", config_name="config", version_base=None)
 def main(cfg: DictConfig):
+    print(f"Chunk Size: {cfg.chunk_size}")
+    print(f"Chunk Overlap: {cfg.chunk_overlap}")
+    print(f"Vector Database: {cfg.vector_db.name}")  
+    print(f"Embedding Model: {cfg.embedding_model.name}")
+    print(f"LLM: {cfg.llm.name}\n")
     # Initialize vector DB
     if cfg.vector_db.name == "redis":
         redis_client = redis.Redis(host=cfg.vector_db.host, port=cfg.vector_db.port, db=cfg.vector_db.db)
@@ -98,6 +115,9 @@ def main(cfg: DictConfig):
     elif cfg.vector_db.name == "chroma":
         chroma_client = chromadb.HttpClient(host=cfg.vector_db.host, port=cfg.vector_db.port)
         chroma_collection = chroma_client.get_or_create_collection(name=cfg.vector_db.collection_name)
+        print(cfg.vector_db.host, cfg.vector_db.port)
+        #chroma_client = chromadb.HttpClient(host="localhost", port=8000)
+        #chroma_collection = chroma_client.get_or_create_collection(name="pdf_embeddings")
 
     elif cfg.vector_db.name == "faiss":
         faiss_index = FAISSManager(cfg.embedding_model.vector_dim)
@@ -166,34 +186,19 @@ def main(cfg: DictConfig):
 
         elif cfg.vector_db.name == "faiss":
             print("\n🔎 Querying FAISS...")
+            embedding = get_embedding(query_text, cfg)
             faiss_results = faiss_index.search(embedding, k=5)
             for key, distance in faiss_results:
                 print(f"{key} \n ----> Distance: {distance}\n")
 
         elif cfg.vector_db.name == "chroma":
             print("\n🔎 Querying ChromaDB...")
+            embedding = get_embedding(query_text, cfg)
             chroma_results = chroma_collection.query(query_embeddings=[embedding], n_results=5)
             for doc_id, score in zip(chroma_results["ids"][0], chroma_results["distances"][0]):
                 print(f"{doc_id} \n ----> Distance: {score}\n")
 
     query_vdb("What is the capital of France?")
-    
-    result2, elapsed_time2, memory_used2 = track_performance(query_vdb, "What is the capital of France?")
-
-    with open("performance_log.csv", mode='r+', newline='') as file:
-        reader = csv.reader(file)
-        lines = list(reader)  
-
-        # Modify the last line
-        if lines:  
-            lines[-1].extend([elapsed_time2, memory_used2])
-
-        # Move cursor to the start & clear file before writing
-        file.seek(0)
-        file.truncate()
-
-        writer = csv.writer(file) 
-        writer.writerows(lines)
 
 if __name__ == "__main__":
     main()

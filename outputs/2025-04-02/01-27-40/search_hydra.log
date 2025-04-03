@@ -1,2 +1,0 @@
-[2025-04-02 01:27:40,736][httpx][INFO] - HTTP Request: POST http://127.0.0.1:11434/api/embeddings "HTTP/1.1 200 OK"
-[2025-04-02 01:27:40,765][httpx][INFO] - HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 404 Not Found"

@@ -2,7 +2,7 @@ defaults:
   - _self_
   - vector_db: redis # Options: redis, chroma, faiss
   - embedding_model: nomic   # Options: nomic, all-Mini, all-mpnet
-  - llm: ollama  # Options: ollama, option 2
+  - llm: mistral  # Options: mistral, llama2
   - prompts_dir # Loads prompts_dir.yaml
   - chunking  # Loads chunking.yaml
   - data_dir # Loads data_dir.yaml

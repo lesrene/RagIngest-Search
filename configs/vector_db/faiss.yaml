@@ -1,2 +1,3 @@
 name: "faiss"
-index path: "/Users/lesrene/Desktop/index.faiss"
+index_path: "/Users/lesrene/Desktop/faiss_index.bin"
+doc_prefix: "doc:"

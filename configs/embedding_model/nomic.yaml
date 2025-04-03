@@ -1,2 +1,2 @@
 name: "nomic-embed-text"
-dimensions: 768
+vector_dim: 768

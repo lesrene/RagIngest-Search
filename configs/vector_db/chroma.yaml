@@ -3,3 +3,4 @@ host: "localhost"
 port: 8000
 db_path: "./chroma_db"
 collection_name: "pdf_embeddings"
+doc_prefix: "doc:"
